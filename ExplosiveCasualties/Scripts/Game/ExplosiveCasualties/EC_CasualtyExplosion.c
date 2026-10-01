@@ -1,19 +1,21 @@
 // ExplosiveCasualties: experimental damaging explosion dispatcher.
-// Resource copied by Jake from the installed Workbench assets (1.8.0.13).
+// Vanilla small TNT triggers locally/on server but is silent. Test an addon-owned
+// inherited prefab with native sound enabled at creation; audio remains unverified.
 // Spawn/configuration follows the supplied vanilla SecondaryExplosion pattern.
 // The prefab's timer owns activation: do NOT also call OnUserTrigger/SetLive.
-// Runtime activation, cleanup, replication, and queue lifetime need testing.
+// Previous large-TNT build worked on Jake's Linux dedicated server/mod stack.
 
 class EC_CasualtyExplosion
 {
-	static const ResourceName EXPLOSION_PREFAB = "{72BEEF40AF179763}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Large.et";
-	static const int DEFER_MS = 1;
+	static const ResourceName EXPLOSION_PREFAB = "{B0DC0394D3820463}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Small_Inherited.et";
+	// Delay before spawning; the prefab adds its own timer before detonation.
+	static const int DEFER_MS = 2000;
 
 	// Static dispatcher, not a callback on the character's component.
 	// Captured source must still exist on damage authority when this runs.
 	// Initial deletion policy: cancel safely if removed before execution;
 	// do not guess current authority for a deleted character. Never retry.
-	static void Spawn(IEntity source, vector capturedPosition, Instigator capturedInstigator, string characterLabel)
+	static void Spawn(IEntity source, Instigator capturedInstigator, string characterLabel)
 	{
 		if (!GetGame() || !source)
 		{
@@ -54,10 +56,13 @@ class EC_CasualtyExplosion
 			return;
 		}
 
+		// Sample current position after the delay, so the blast follows a falling,
+		// moved or recovered character rather than its position two seconds ago.
+		vector blastPosition = source.GetOrigin() + Vector(0, 0.3, 0);
 		// Independent world-space entity: do not parent to the casualty/vehicle.
 		EntitySpawnParams spawnParams = new EntitySpawnParams();
 		spawnParams.TransformMode = ETransformMode.WORLD;
-		spawnParams.Transform[3] = capturedPosition;
+		spawnParams.Transform[3] = blastPosition;
 		IEntity explosion = GetGame().SpawnEntityPrefab(resource, source.GetWorld(), spawnParams);
 		if (!explosion)
 		{
@@ -97,7 +102,21 @@ class EC_CasualtyExplosion
 				container.SetIgnoreList(ignoreList);
 		}
 
-		Print(string.Format("[ExplosiveCasualties][blast] %1; spawned explosion=%2; position=%3; damageContainers=%4", characterLabel, explosion.GetID(), capturedPosition, damageContainers.Count()));
+		// Native sound must be configured on the addon prefab for all instances.
+		// Presence/active-state diagnostics only: no runtime activation or manual
+		// sound event, so this test isolates the saved prefab configuration.
+		// A missing component on headless authority alone does not prove a client bug.
+		SoundComponent sound = SoundComponent.Cast(explosion.FindComponent(SoundComponent));
+		if (sound)
+		{
+			Print(string.Format("[ExplosiveCasualties][audio] %1; prefab-native SoundComponent present; active=%2; no manual activation/event", characterLabel, sound.IsActive()));
+		}
+		else
+		{
+			Print(string.Format("[ExplosiveCasualties][audio] %1; prefab-native SoundComponent missing on this instance; blast retained", characterLabel), LogLevel.WARNING);
+		}
+
+		Print(string.Format("[ExplosiveCasualties][blast] %1; spawned explosion=%2; position=%3; damageContainers=%4", characterLabel, explosion.GetID(), blastPosition, damageContainers.Count()));
 		Print(string.Format("[ExplosiveCasualties][blast] %1; timerLeft=%2s; alreadyTriggered=%3; prefab timer owns activation (NO manual trigger)", characterLabel, trigger.GetTimer(), trigger.WasTriggered()));
 		if (trigger.WasTriggered())
 			Print(string.Format("[ExplosiveCasualties][blast] %1; WARNING: trigger already fired at configuration time; inspect timing before trusting attribution/ignore list", characterLabel), LogLevel.WARNING);

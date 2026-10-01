@@ -1,19 +1,14 @@
-// ExplosiveCasualties: experimental authority-gated casualty explosions.
-// Previous logging-only gate/latch passed local NON_PROXY paths in 1.8.0.13.
-// This gameplay revision has NOT been compiled or runtime-tested yet.
-// Vanilla handler is preserved; activation uses a verified resource reference.
-// Networking/JIP, timer activation, queue lifetime, and cleanup remain unverified.
+// ExplosiveCasualties: authority-gated, repeatable casualty explosions.
+// Every real transition into INCAPACITATED or DEAD can queue its own blast.
+// No lifetime latch; authority, JIP and unchanged-state checks are retained.
+// Previous large-TNT/latch build passed local tests and Jake's Linux server run.
+// Small TNT / repeat transitions / two-second delay revision needs testing.
 // Entity IDs are session-local diagnostics, not cross-client network IDs.
 
 modded class SCR_CharacterDamageManagerComponent
 {
-	// One request per character's damage-manager instance; never reset on revival
-	// or a failed/cancelled spawn. Not replicated or persisted.
-	protected bool m_bEC_BlastRequested;
-
-	// Conservative exclusion for a character observed as a replayed casualty.
-	// This flag is separate from acceptance and never queues a blast.
-	protected bool m_bEC_ReplayCasualty;
+	// Diagnostic counter only: never used to suppress an eligible transition.
+	protected int m_iEC_BlastRequestCount;
 	protected static bool s_bEC_EnumLogged;
 
 	protected string EC_StateName(ECharacterLifeState state)
@@ -60,39 +55,28 @@ modded class SCR_CharacterDamageManagerComponent
 		}
 
 		bool queueBlast;
-		vector capturedPosition;
 		Instigator capturedInstigator;
+		string requestLabel;
 		string decision;
 		if (isJIP)
-		{
-			if (EC_IsCasualty(newLifeState))
-				m_bEC_ReplayCasualty = true;
-
 			decision = "skip: JIP/replay notification";
-		}
 		else if (previousLifeState == newLifeState)
 			decision = "skip: unchanged state";
 		else if (!EC_IsCasualty(newLifeState))
-			decision = "skip: not a casualty entry (latch preserved)";
+			decision = "skip: not a casualty entry (pending requests unchanged)";
 		else if (!owner)
 			decision = "skip: missing owner";
 		else if (!defaultHitZone)
 			decision = "skip: missing default hit zone (authority unknown)";
 		else if (damageProxy)
-			decision = "skip: damage proxy (trigger latch untouched)";
-		else if (m_bEC_ReplayCasualty)
-			decision = "skip: entity previously observed as a replayed casualty";
-		else if (m_bEC_BlastRequested)
-			decision = "skip: already latched";
+			decision = "skip: damage proxy";
 		else if (!GetGame() || owner.GetWorld() != GetGame().GetWorld())
 			decision = "skip: source outside current game world";
 		else
 		{
-			// Capture before vanilla/listener work can alter attribution or pose.
-			// Initial placement: entity origin + 0.3 m world-up; tune via testing.
-			capturedPosition = owner.GetOrigin() + Vector(0, 0.3, 0);
+			// Capture attribution before vanilla/listener work can alter it.
+			// Position is sampled by the dispatcher after the two-second delay.
 			capturedInstigator = GetInstigator();
-			// Initial credit policy: existing attacker; if absent, casualty itself.
 			if (!capturedInstigator)
 				capturedInstigator = Instigator.CreateInstigator(owner);
 
@@ -100,10 +84,12 @@ modded class SCR_CharacterDamageManagerComponent
 				decision = "skip: cannot capture/create instigator";
 			else
 			{
-				// Reserve BEFORE super and queueing; protects against reentrancy.
-				m_bEC_BlastRequested = true;
+				// Each eligible transition creates an independent queue entry.
+				// Never reset/coalesce earlier requests on recovery or later death.
+				m_iEC_BlastRequestCount++;
+				requestLabel = string.Format("%1; request=%2", characterLabel, m_iEC_BlastRequestCount);
 				queueBlast = true;
-				decision = "accepted: deferred TNT blast requested";
+				decision = string.Format("accepted: small TNT blast requested; request=%1; delayMs=%2", m_iEC_BlastRequestCount, EC_CasualtyExplosion.DEFER_MS);
 			}
 		}
 
@@ -116,15 +102,15 @@ modded class SCR_CharacterDamageManagerComponent
 			Print(string.Format("[ExplosiveCasualties][trigger] compiled enum: ALIVE=%1; INCAPACITATED=%2; DEAD=%3", ECharacterLifeState.ALIVE, ECharacterLifeState.INCAPACITATED, ECharacterLifeState.DEAD));
 		}
 
-		Print(string.Format("[ExplosiveCasualties][trigger] %1; life-state %2(%3) -> %4(%5); isJIP=%6; latched=%7; replayCasualty=%8", characterLabel, EC_StateName(previousLifeState), previousLifeState, EC_StateName(newLifeState), newLifeState, isJIP, m_bEC_BlastRequested, m_bEC_ReplayCasualty));
+		Print(string.Format("[ExplosiveCasualties][trigger] %1; life-state %2(%3) -> %4(%5); isJIP=%6; requests=%7", characterLabel, EC_StateName(previousLifeState), previousLifeState, EC_StateName(newLifeState), newLifeState, isJIP, m_iEC_BlastRequestCount));
 		Print(string.Format("[ExplosiveCasualties][trigger] %1; damageRole=%2", characterLabel, damageRole));
 		Print(string.Format("[ExplosiveCasualties][trigger] %1; %2", characterLabel, decision));
 
 		if (queueBlast)
 		{
-			// One-shot deferred call, never spawn inside this damage callback.
+			// Do not Remove() earlier calls: unconsciousness then death queues TWO.
 			// Dispatcher rechecks existence/world/damage authority. No RPC here.
-			GetGame().GetCallqueue().CallLater(EC_CasualtyExplosion.Spawn, EC_CasualtyExplosion.DEFER_MS, false, owner, capturedPosition, capturedInstigator, characterLabel);
+			GetGame().GetCallqueue().CallLater(EC_CasualtyExplosion.Spawn, EC_CasualtyExplosion.DEFER_MS, false, owner, capturedInstigator, requestLabel);
 		}
 	}
 }

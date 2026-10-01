@@ -1,51 +1,60 @@
 # Resume here — ExplosiveCasualties
 
-Updated by **Element0**, 2026-10-01, after Jake's successful local gameplay explosion run.
-
-**Current experimental gameplay source passed its first local explosion test.** Jake observed real explosions; the log confirms one deferred spawn per accepted character, latch rejection on subsequent death, and recovery preserving the latch. Multiple squad casualties produced individual blasts, consistent with intended chains. See the [local explosion record](test-runs/2026-10-01-local-explosions.md). Next: choose a license, publish/distribute this experimental build, and test on Jake's empty dedicated server plus his normal client. No second Steam account or separate diagnostic-only release is required. Network correctness is NOT established by this local run.
+Updated by **Element0**, 2026-10-01, after Jake resolved the inherited-prefab save issue and confirmed local explosion audio.
 
 ## Current checkpoint
 
-- Workbench project: `ExplosiveCasualties/addon.gproj`; keep generated identifiers/database intact. Repository root and addon root are separate.
-- Trigger: `ExplosiveCasualties/Scripts/Game/ExplosiveCasualties/EC_CharacterLifeStateProbe.c`. Filename retained, but this is no longer a harmless probe.
-- New dispatcher: `ExplosiveCasualties/Scripts/Game/ExplosiveCasualties/EC_CasualtyExplosion.c`.
-- Selected vanilla resource, copied by Jake:
-  `{72BEEF40AF179763}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Large.et`.
-- Inspected prefab components: TimerTriggerComponent, HitEffectComponent, RplComponent. Screenshot confirms enabled, trigger-once ExplosionDamageContainer with damage/impulse effects, plus decal and particle effects. One visible base effect shows damage 1000 and damage distance 10; these are NOT a complete blast-strength/radius specification. Charge Weight displayed 45000; do not infer undocumented units. Delete On Trigger appears unchecked.
-- Local runtime confirms the prefab automatically activates without OnUserTrigger or SetLive. Spawn diagnostics show damageContainers=1, timerLeft=0.05 s and alreadyTriggered=0 during configuration. Sound, entity cleanup and network effects remain unverified.
-- Previous local tests (1.8.0.13): direct death accepted once; incapacitation/recovery/re-incapacitation/death on one character accepted once, all NON_PROXY. Compiled constants: ALIVE=0, INCAPACITATED=1, DEAD=10. Use names, not numbers.
-- Jake ran the new gameplay source locally and reported real explosions. Runtime proves loading/execution; a full compiler transcript was not supplied. No package, publication, license decision, or Git commit has been reported. Element0 cannot run Workbench and did not perform the runtime test.
+**The prior large-TNT/once-per-character build was published, successfully play-tested on Jake's Linux dedicated server alongside approximately 130 other mods, and committed/pushed by Jake.** Exact Workshop revision, commit hash, mod list, visibility and license terms were not supplied. See the [server report](test-runs/2026-10-01-linux-dedicated-large-tnt.md). Earlier local logs remain historical evidence.
 
-## Implemented experimental policies
+**Current revision:** small TNT, repeat casualty transitions, approximately two-second delay. Jake reported proper triggering in Workbench and on his dedicated server, initially without sound. After saving the native SoundComponent enabled override in our inherited prefab, he confirmed **working audio in World Editor/Game Master**. Element0 verified the saved override on disk. Corrected audio on the server's client remains to be retested. See the [audio investigation and resolution](test-runs/2026-10-01-small-tnt-silent.md). Exact timing and individual repeat/JIP/cleanup cases were not separately documented.
 
-- Preserve vanilla handler; no duplicate event subscription.
-- Reject JIP/unchanged/non-casualty observations and missing/proxy default hit zones.
-- Conservative separate replay-casualty exclusion remains; initialization/JIP coverage is not proven.
-- Reserve one request latch per character BEFORE vanilla handler and queuing. Recovery, cancellation and failed spawning never reset it. Start fresh sessions/characters after source changes.
-- Capture origin + 0.3 m world-up and current instigator at acceptance. Credit existing instigator; use casualty itself only if none exists. Attribution effects on score/teamkills remain untested.
-- Queue one static-dispatcher call with a nominal 1 ms delay (actual scheduling is engine/frame-dependent). Recheck source, game world, damage manager and non-proxy hit zone before spawning.
-- Initial deletion policy: cancel if the source/component disappears or authority is lost before execution. The latch remains reserved; no retry. This deliberately does not guarantee a blast after immediate corpse deletion. Dispatcher/engine-reference lifetime behavior needs testing.
-- Spawn independent world-space explosion; set captured instigator and ignore ONLY the source character, not its root hierarchy or vehicle occupants. Own-blast survival/gear and nearby-chain behavior need testing.
-- Prefab timer owns activation/networking/lifecycle. No manual activation, broadcast damage RPC, or extra radial-damage path. Resource/spawn/trigger/damage-container failures log explicitly.
-- Prefixes: `[ExplosiveCasualties][trigger]` and `[ExplosiveCasualties][blast]`. A spawn log is not proof of detonation, damage, sound or client effects.
+- Project: `ExplosiveCasualties/addon.gproj`; repository root and addon root are separate. Preserve generated identifiers/metadata.
+- Trigger: `ExplosiveCasualties/Scripts/Game/ExplosiveCasualties/EC_CharacterLifeStateProbe.c` (historical filename; gameplay code).
+- Dispatcher: `ExplosiveCasualties/Scripts/Game/ExplosiveCasualties/EC_CasualtyExplosion.c`.
+- Current selected asset supplied by Jake and verified against generated metadata:
+  `{B0DC0394D3820463}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Small_Inherited.et`.
+  It inherits vanilla `{2F690C7C59FB4DBF}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Small.et`.
+  Saved `.et` now contains the inherited SoundComponent override with `Enabled 1`; verified by Element0. Jake confirmed local sound. Preserve the generated component/resource identifiers.
+- Last observed build: 1.8.0.13; named constants ALIVE=0, INCAPACITATED=1, DEAD=10.
+
+## Current behavior contract
+
+- Every real transition into INCAPACITATED or DEAD creates an independent request. No lifetime latch: unconsciousness -> death queues TWO; recovery -> unconsciousness can queue another.
+- Skip JIP/replay callbacks, unchanged states, non-casualty entries, missing owner/hit zone, proxies and non-game-world sources. No permanent replay-casualty exclusion: a later real transition on a replayed/recovered character is eligible.
+- Keep damage authority gating at acceptance and execution. "Remove the gate" was interpreted as removing the once-per-character latch, not allowing client-generated damage.
+- Call original vanilla handler; no duplicate event subscription.
+- Delay each spawn by `DEFER_MS=2000`. Each pending request survives recovery/later transitions; no coalescing/removal. Actual detonation includes engine/frame scheduling and the prefab timer. Both LARGE and SMALL inspector/runtime evidence show a 0.05 s timer (SMALL observed in inspector; not a precise detonation-time measurement).
+- Capture instigator at transition (current attacker, casualty fallback). Sample source position at delayed execution: current origin + 0.3 m world-up. Blast follows movement/falling/recovery during the delay, rather than using a stale event position.
+- Cancel a request if source/component disappears, game world changes, authority is lost, or attribution is unavailable before execution. No retry; no blast guarantee after immediate corpse deletion.
+- Spawn unparented/world-space and ignore ONLY source character, not its vehicle/root hierarchy/other occupants. Revival remains possible, not guaranteed.
+- Prefab timer owns activation/networking/lifecycle; no manual trigger or second damage RPC.
+- Logs include entity/request labels and delayMs=2000. Counters are diagnostic only, never eligibility gates. IDs/request numbers are local, not cross-process identifiers.
 
 ## Immediate next steps
 
-1. Choose a license deliberately, then publish an experimental Workshop build, preferably Unlisted. Do not infer publication or privacy from this plan. Describe it as an experimental casualty-explosion addon with multiplayer behavior under test.
-2. Add the exact published revision to Jake's dedicated-server configuration and join using his regular client. Server OS/hosting/configuration and Workshop ID have not been supplied; ask rather than invent them. Restarts are acceptable.
-3. Collect separately labelled server/client logs. First test one AI casualty, then a player casualty. Expect one authoritative request/spawn; observed client proxy callbacks must not accept or spawn. Absent callbacks are not an observed proxy-rejection pass. Local entity IDs are not cross-process IDs.
-4. Check actual client explosion visuals/sound and nearby damage, then small chains. Verify respawn, joining/reconnecting with existing casualties, and no replayed blasts. Keep explosions enabled for these network tests.
-5. Check successful-spawn entity cleanup. Delete On Trigger appeared unchecked; do not infer either a leak or cleanup without observation. Investigate if entities persist after effects.
-6. Continue targeted vehicle/occupant, deletion, attribution, initialization and performance tests. The recovery/death decision for entity ending 1778 was truncated in the latest log; recovery latch retention is confirmed, its final skip is not captured.
+**Next: publish the sound-enabled inherited asset with its metadata and retest audio from the normal client on Jake's Linux dedicated server.** Local audio is confirmed; no further local audio diagnosis is required unless the problem returns. No new gameplay code is needed for that test.
 
-For any future source change: stop Play, reload external changes from disk, compile with Shift+F7, start fresh characters/session, and never hot-reload midway through a latch sequence. No behavior changes were made while recording the successful local run.
+Audio correction uses the existing native SOUND_EXPLOSION path in the addon-owned inherited prefab, with SoundComponent `Enabled 1`. The unsuccessful runtime Activate attempt was removed; presence/IsActive diagnostics remain, with no manual sound event or sound RPC. A missing component on headless authority alone does not establish a client bug.
 
-## Evidence and limits
+**Workbench persistence reminder:** Jake found that saving the disposable empty inspection world was necessary for the object's changes to persist. Save that addon-owned/test world, apply/save changes to OUR prefab, and verify its `.et` on disk. Do not save modified vanilla GM_Eden or apply changes to base-game prefabs. The earlier UI/file disagreement was an editor persistence quirk, not user error. This workflow produced the verified SoundComponent override and working local audio.
 
-- [Latest local explosion test](test-runs/2026-10-01-local-explosions.md) covers the CURRENT gameplay revision: real explosions reported, direct-death/incapacitation acceptance, later-death latch rejection, recovery, and multi-casualty spawns. Damage causality for every casualty and cleanup were not instrumented.
-- [Earlier local diagnostic tests](test-runs/2026-10-01-local-authority-dry-run.md) remain historical evidence for the logging-only revision.
-- [Installed lifecycle source](source-notes/2026-10-01-character-lifecycle.md): controller subscription and hit-zone authority pattern; do not add another subscription.
-- [Installed explosion source and selected asset](source-notes/2026-10-01-secondary-explosion.md): vanilla ignores its instigator argument and excludes root hierarchy; adapted implementation deliberately differs.
-- [Design](DESIGN.md), [test matrix](TESTING.md), [setup](SETUP.md).
+Resume the targeted behavior checks below as useful; aggregate play success is not instrumented coverage of every case.
 
-Authority migration, persistence, medical-overhaul compatibility, large chains, JIP and dedicated/client correctness remain unverified. Local entity IDs are not cross-process replication IDs. Keep account/server secrets out of docs and published assets.
+1. After changes, stop Play, reload both `.c` files from disk, compile with Shift+F7, start a fresh session. Jake already ran the current revision in both environments; Element0 has not compiled/run it.
+2. Isolated unconsciousness: one request, about two seconds then a SMALL blast. Check timerLeft/alreadyTriggered and actual effects, not just spawn logs.
+3. Unconsciousness then death BEFORE the first fuse expires: same character must log requests 1 and 2; both spawn independently near their own due times.
+4. Recovery before a pending blast: recovery does not cancel it. Later unconsciousness creates a new request. Move the source during the delay to verify updated placement.
+5. Check direct death, source deletion during delay, and small chains. More than one blast per character is now intentional; extra unchanged/proxy/replay blasts are not.
+6. Jake uploads the updated Workshop version, updates/restarts his Linux server and checks the same behavior with his normal client/full mod stack. No second Steam account, separate diagnostic release or maintenance-window prerequisite.
+7. Record exact game/addon revisions and separately labelled server/client evidence where feasible. JIP/reconnect, client non-acceptance, cleanup, attribution/vehicle behavior and performance remain targeted follow-up work, not individually proven by the aggregate server report.
+
+## Evidence
+
+- [Linux dedicated-server report: previous large-TNT build](test-runs/2026-10-01-linux-dedicated-large-tnt.md)
+- [Local large-TNT gameplay log](test-runs/2026-10-01-local-explosions.md)
+- [Earlier local authority diagnostic](test-runs/2026-10-01-local-authority-dry-run.md)
+- [Installed lifecycle source](source-notes/2026-10-01-character-lifecycle.md)
+- [Installed explosion source / LARGE asset evidence](source-notes/2026-10-01-secondary-explosion.md)
+- [Design](DESIGN.md), [current tests](TESTING.md), [setup](SETUP.md)
+
+Do not retroactively rewrite historical once-per-character test outcomes to the new repeat-trigger contract. No project identifiers/resource databases were altered, and Element0 did not publish or commit these changes. Keep server/account secrets out of docs and published assets.

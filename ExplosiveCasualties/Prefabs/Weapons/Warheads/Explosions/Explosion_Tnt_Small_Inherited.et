@@ -1,0 +1,9 @@
+GenericEntity : "{2F690C7C59FB4DBF}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Small.et" {
+ ID "9D9BE68EA2672F76"
+ components {
+  SoundComponent "{D092A75ECEFAE456}" {
+   Enabled 1
+  }
+ }
+ coords 1.898 5.451 2.789
+}

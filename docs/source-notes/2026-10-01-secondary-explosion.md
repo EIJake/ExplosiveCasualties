@@ -1,5 +1,7 @@
 # Installed secondary-explosion source inspection
 
+**Historical asset evidence below concerns Explosion_Tnt_Large.et.** Jake subsequently reported Linux dedicated-server success with that build, then requested SMALL/repeat-trigger/2000 ms behavior. Current resource is `{2F690C7C59FB4DBF}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Small.et`; its activation/timer/cleanup are not yet tested. See [current design](../DESIGN.md) and [resume](../RESUME.md). Keep the original source and LARGE observations below as historical evidence, not claims about SMALL.
+
 Recorded by **Element0**, 2026-10-01. Evidence: Jake supplied the installed `SCR_DamageManagerComponent.c` source in the conversation. Last observed runtime build: 1.8.0.13; no separate build/version check accompanied this source.
 
 ## Confirmed implementation

@@ -1,105 +1,89 @@
 # Design and implementation
 
-Current checkpoint: [RESUME.md](RESUME.md). **Experimental gameplay source passed its first local explosion test.** See the [gameplay record](test-runs/2026-10-01-local-explosions.md): Jake observed real explosions; direct death/incapacitation spawn once, later death skips, and recovery retains the latch. Multiple squad casualties produce blasts consistent with intended chains. Dedicated-server/client, JIP, cleanup and performance are still unverified. Prior [diagnostic tests](test-runs/2026-10-01-local-authority-dry-run.md) remain separate historical evidence.
+Current checkpoint: [RESUME.md](RESUME.md). Previous large-TNT/once-per-character code passed local gameplay tests and Jake reported success on his Linux dedicated server with approximately 130 other mods, publication and commit/push. See the [server report](test-runs/2026-10-01-linux-dedicated-large-tnt.md). **Jake ran the small/repeat/delayed revision locally and on the Linux server: triggers work. The initial silence was corrected locally by saving a native SoundComponent enabled override in our inherited prefab. Jake confirmed audio in World Editor/Game Master, and Element0 verified `Enabled 1` on disk. Corrected server-client audio still needs retesting.**
 
-## Behavior contract
+## Behavior contract — revised 2026-10-01
 
-An ordinary soldier produces one large explosion on entering unconsciousness or death. Direct death must work without unconsciousness first. The later death of a previously processed unconscious character must not explode again.
+Each real life-state transition into INCAPACITATED or DEAD requests a small TNT explosion about two seconds later. No once-per-character gate:
 
-Eligibility belongs to a character entity, not a player account. Revival never resets the initial-release latch; a newly spawned character can request its own blast. Nearby casualties may trigger their own explosions. Chains are intentional; duplicates/client-generated damage are not.
+- ALIVE -> INCAPACITATED: request one.
+- INCAPACITATED -> DEAD: request another, even if the first remains pending.
+- ALIVE -> DEAD: request one.
+- INCAPACITATED -> ALIVE: no new request and no cancellation.
+- Recovered character -> INCAPACITATED again: request another.
+- Same-state notification, JIP/replay callback or damage proxy: no request.
 
-Existing casualties must not spontaneously explode on initialization/JIP. Current replay filtering is provisional. Persistence, save/load, authority migration and medical-overhaul compatibility are not claimed.
+Nearby casualty chains are intentional. Repeat explosions for distinct transitions on one character are now intentional too; client-generated or unchanged-notification duplicates are not. The user's request to remove the gate removes the lifetime latch, NOT damage authority or JIP filtering. The old permanent replay-casualty flag is removed: later real transitions are eligible.
 
-## Implemented experimental architecture
+## Architecture
 
-`modded class SCR_CharacterDamageManagerComponent`, in the historical `EC_CharacterLifeStateProbe.c`, preserves vanilla's handler and existing controller subscription. No replacement soldier prefabs or extra event subscription.
+The historical `EC_CharacterLifeStateProbe.c` modifies SCR_CharacterDamageManagerComponent, preserving vanilla's handler and existing controller subscription. No extra subscription/replacement soldier prefabs.
 
 ```text
 life-state callback:
-    reject JIP/replay, unchanged state, non-casualty transitions
-    reject missing owner/hit zone or damage proxy
-    reject replay-excluded/already-latched entity or non-game world
-    capture position and attribution
-    reserve latch BEFORE vanilla handler and queuing
+    reject JIP, unchanged state, non-casualty entries
+    require owner, current game world and non-proxy default hit zone
+    capture attribution; increment diagnostic request number
     always call original handler and log decision
-    queue one deferred static-dispatcher call
+    queue an independent static dispatcher call with 2000 ms delay
 
 queued dispatcher:
-    recheck source/world/damage manager/hit-zone authority
+    recheck source/world/component and non-proxy damage authority
     validate captured instigator and selected resource
-    spawn independent world-space vanilla explosion
-    validate timer trigger and explosion damage container
-    apply captured instigator and character-only damage ignore list
+    sample current source position + 0.3 m world-up
+    spawn world-space vanilla explosion; validate timer/damage container
+    apply captured instigator and source-only ignore list
     log spawn/timer state; let prefab own activation and replication
 ```
 
-The dispatcher, static queued call and spawn/configure APIs now have local runtime evidence in the installed build. Jake performed the test; a full compiler transcript was not supplied. This is not network or failure-path verification.
+No per-character acceptance latch, last-request gate, queue replacement or request coalescing. The counter labels events, not eligibility. No `Remove()` call cancels older pending blasts. Multiple calls for one source have independent captured instigators/labels and due times. All damage stays outside the current damage callback.
 
 ### Resource and activation
 
-Jake copied `{72BEEF40AF179763}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Large.et` from Workbench. Inspected components include TimerTriggerComponent, HitEffectComponent and RplComponent. Screenshot confirms enabled/trigger-once damage, impulse, particle and decal effects. One visible base effect shows 1000 damage and 10 damage distance; several effects exist, so neither value describes the whole blast. Charge Weight 45000 is recorded without inferring units.
+Jake supplied vanilla `{2F690C7C59FB4DBF}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Small.et`; its blasts triggered locally/on the server but were silent. The dispatcher now selects his addon-owned derivative, `{B0DC0394D3820463}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Small_Inherited.et`. Its generated `.meta` matches the reference, and its saved `.et` now overrides the inherited SoundComponent with `Enabled 1`. Jake confirmed sound in World Editor/Game Master. Corrected audio on the server's client remains a follow-up test. No global vanilla override. Runtime Activate was removed; native-component presence/IsActive diagnostics remain without manual sound playback/RPC.
 
-Use vanilla's spawn/configure pattern, WITHOUT an additional OnUserTrigger or SetLive call. Local runtime confirms automatic timer activation, with timerLeft=0.05 s and alreadyTriggered=0 during configuration. Sound and network effects remain unverified. Diagnostic prints timerLeft and alreadyTriggered; if it already fired during creation, attribution/ignore-list setup is too late and needs correction. Do not solve a silent blast by blindly layering multiple activation paths.
+Jake identified a Workbench persistence quirk: the disposable empty inspection world needed saving for object changes to persist. Apply/save overrides to the addon-owned prefab and verify the actual `.et`, rather than relying solely on the inspector checkbox or Apply button. Do not save modifications to vanilla worlds/prefabs. See the [audio investigation](test-runs/2026-10-01-small-tnt-silent.md).
 
-Delete On Trigger appears unchecked. The prefab may manage lifetime elsewhere; cleanup is unverified. Do not infer successful cleanup or a leak from that checkbox alone. Observe the spawned entity and inspect lifecycle if it remains after effects. No custom successful-spawn cleanup is implemented yet.
+Keep vanilla spawn/configure pattern without additional OnUserTrigger/SetLive. LARGE automatically activated with a 0.05 s timer at configuration; SMALL inspector showed a 0.050 s timer, and Jake reports proper triggering in both environments. Exact delayed-detonation timing remains unmeasured. Logs include timerLeft/alreadyTriggered; already-triggered configuration is a warning that attribution/ignore setup may be too late. Investigate rather than layer activation paths.
 
-### Authority and once-per-entity latch
+### Authority and replay safety
 
-Vanilla source gates damage-related work on `HitZone.IsProxy()`. Current acceptance requires an existing non-proxy default hit zone; execution repeats this check. A local player controlling a character does not establish damage authority. No custom RPC broadcasts a second damage path.
+Vanilla gates damage-related work on HitZone.IsProxy(). Require an existing non-proxy default hit zone at acceptance AND execution. Client control does not establish damage authority. No custom damage RPC.
 
-The instance-local latch is reserved before calling vanilla or queuing work, and remains set after recovery, cancellation or failure. It is not replicated/persistent. It passed the earlier local logging-only tests, including second unconsciousness. Networking, migration and save/load remain unverified; unexpected client acceptance must be fixed before claiming support.
+JIP/replay callbacks never queue a blast. Unlike the earlier build, they do not permanently blacklist a character: a later real casualty entry can request independently. Same-state callbacks skip. This does not prove every initialization path is filtered; pre-existing/spawned casualties with isJIP=false remain targeted tests. Duplicate notification of an identical changed-state pair is not explicitly deduplicated by a new event-ID mechanism.
 
-### Replays and initialization
+### Delay, position and source lifetime
 
-JIP callbacks never queue a blast. A replayed casualty sets a separate conservative exclusion flag, even on a proxy; this is not acceptance. Later casualty transitions on that same local instance remain excluded even after recovery. Healthy replayed characters remain eligible for later real casualty entries.
+`DEFER_MS=2000` delays SPAWN. Actual detonation is 2000 ms plus engine scheduling and the prefab timer, not an exact two-second fuse. Do not alter timer APIs just to subtract an unverified SMALL timer duration.
 
-This does not handle every possible initialization event: `isJIP=false` is not proof of a fresh live casualty. Existing/spawned casualties, engine dispatch and readiness semantics need tracing/testing.
+Position is sampled at execution, source origin + 0.3 m world-up. This intentionally changes the previous captured-position policy so a falling, transported, or recovered soldier carries the pending blast to its current location. Spawn is unparented/world-space.
 
-### Defer, placement and deletion
+Recovery and later casualty transitions do not cancel or postpone a pending request. Source/component deletion, world change, loss of damage authority or unavailable attribution cancels that request with a diagnostic and no retry. Immediate-deletion blast guarantee and authority-migration/persistence support are not implemented. Longer delay increases exposure to source deletion; test it.
 
-One static `EC_CasualtyExplosion.Spawn` call is queued with nominal 1 ms delay. Scheduling is engine/frame-dependent; gameplay damage must not occur synchronously in the current life-state/damage callback.
+### Attribution and own-source exclusion
 
-Position is captured at acceptance: entity origin + 0.3 m world-up. Spawn is unparented/world-space, not relative to a character or vehicle. Pose, occlusion, floors and vehicle placement need testing.
+Capture current instigator at each transition; fallback to casualty if absent. Apply that captured object to the explosion trigger, rather than reading changed attribution two seconds later. Score/friendly-fire attribution is not separately verified.
 
-**Initial deletion policy:** cancel when source/component no longer exists, game world differs, or source loses damage authority before execution. Do not retry. A static dispatcher avoids requiring a still-live component method, but engine reference/queue lifetime needs empirical testing. This conservative first implementation does not guarantee the desired eventual blast when a corpse is immediately deleted. Revisit with a stable authority context if needed.
+Ignore ONLY source character in ExplosionDamageContainer, not root hierarchy/vehicle/passengers. Own blast need not kill a recoverable soldier; other characters' blasts, gear, impulse and other effects can still affect it. Test rather than promise survival. Repeat transitions can produce more chain-wave blasts than the earlier build.
 
-### Attribution and source exclusion
+### Failure handling, cleanup and load
 
-Capture `GetInstigator()` at acceptance; if absent, create an instigator for the casualty. Apply that captured object to the explosion trigger. This deliberately differs from vanilla SecondaryExplosion, which ignores its supplied argument and reads the manager's current instigator. Original-attacker credit is the initial policy, including chains; actual scoreboard/friendly-fire behavior remains untested.
+Resource/spawn/missing timer/damage-container failures log explicitly. Delete malformed spawned entities; do not retry. The new SMALL prefab cleanup and queue/reference lifetime need tests. No custom successful-spawn cleanup or load/concurrency cap is added. A spawn log alone is not proof of effects, damage, cleanup or cross-client replication.
 
-Ignore only the source character in ExplosionDamageContainer. Do not ignore its root hierarchy: that could exempt vehicles/passengers. Own-blast survival is intended to leave revival possible, but carried gear, impulse, other effects and subsequent chains can still affect the casualty. Verify rather than promise survival.
+## Test route and evidence limits
 
-### Failures and chains
+Stop Play, reload both files, compile and locally check small/repeat/delay behavior. Jake can upload the revised Workshop version and restart his Linux server with the normal client/full mod stack; no second Steam account or diagnostic-only release is required.
 
-Log invalid resource, failed spawn, missing timer/damage container, missing attribution, deletion and authority loss. Delete a malformed spawned entity with the vanilla helper. No retry storm or latch reset.
-
-No custom concurrency/load limits yet. Latches and deferral prevent synchronous self-recursion, not large-wave performance costs. Test a single isolated casualty, then a few nearby soldiers before larger chains.
-
-## Test route agreed with Jake
-
-Use his empty dedicated server + one normal client, after a local compile/single-blast check. Implement explosions before multiplayer verification; combine authority, damage/effects, duplication, chains and JIP tests. No second Steam account, separate logging-only Workshop release or maintenance-window procedure required. A listen-server/two-client run remains optional additional coverage, not claimed by a dedicated-server pass.
-
-## Verification and milestones
-
-| Item | Evidence/status | Next |
-| --- | --- | --- |
-| Project/layout and original probe | Verified locally; generated metadata retained | Do not recreate project |
-| Enum members | ALIVE=0, INCAPACITATED=1, DEAD=10 on 1.8.0.13 | Continue named comparisons |
-| Subscription/authority pattern | Installed source supplied and inspected | Engine dispatch/init and network verification |
-| Prior local diagnostic latch | Direct death and incapacitation/recovery/re-incapacitation/death passed NON_PROXY | Regression with real blasts |
-| Resource | Local real explosions reported; damageContainers=1, timerLeft=0.05 s, alreadyTriggered=0 at configuration | Quantified damage/attribution, client effects and cleanup |
-| Gameplay trigger/dispatcher | Local runtime pass: direct death/incapacitation, later-death latch rejection, recovery latch retention, multiple distinct casualty spawns | Publish experimental build; dedicated-server/client tests |
-| Attribution/deletion/ignore policies | Explicitly implemented, untested | Score/gear/vehicle and immediate deletion tests |
-| Dedicated/client/JIP | Not tested | Experimental build on Jake's server/client |
-| Packaging/license | Not done; no license selected | Choose before publication |
+Previous server report is aggregate success with approximately 130 mods, without process-labelled logs or exact mod list. It does not individually establish JIP/reconnect, proxy rejection, cleanup, performance, vehicle behavior or compatibility with every medical overhaul. Keep historical latch records as history, not the current contract.
 
 ## Sources
 
 - [Installed lifecycle notes](source-notes/2026-10-01-character-lifecycle.md)
-- [Installed explosion source and asset evidence](source-notes/2026-10-01-secondary-explosion.md)
+- [Installed explosion source and LARGE asset evidence](source-notes/2026-10-01-secondary-explosion.md)
+- [Previous local gameplay test](test-runs/2026-10-01-local-explosions.md)
+- [User-reported Linux server test](test-runs/2026-10-01-linux-dedicated-large-tnt.md)
 - [Scripting Modding](https://community.bistudio.com/wiki/Arma_Reforger:Scripting_Modding)
 - [Character damage-manager API](https://community.bistudio.com/wikidata/external-data/arma-reforger/ArmaReforgerScriptAPIPublic/interfaceSCR__CharacterDamageManagerComponent.html)
 - [Timer trigger API](https://community.bistudio.com/wikidata/external-data/arma-reforger/ArmaReforgerScriptAPIPublic/interfaceTimerTriggerComponent.html)
-- [Explosion configuration discussion](https://reforger.armaplatform.com/news/modding-update-sept-10-2024)
 
-Installed runtime/source takes precedence over mirrors. Written code and checklists are not test results.
+Installed source/runtime takes precedence over online mirrors. Written code/checklists are not test results.

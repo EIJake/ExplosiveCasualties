@@ -1,5 +1,7 @@
 # Installed character lifecycle and damage-authority source inspection
 
+**Historical decision notes below describe the earlier once-per-character revision.** Current code retains the non-proxy authority check but removes both the lifetime latch and permanent replay-casualty exclusion. Every real casualty transition independently schedules a small blast after a 2000 ms spawn delay. See [current design](../DESIGN.md) and [resume](../RESUME.md); original source observations remain valid.
+
 Recorded by **Element0**, 2026-10-01. Evidence: Jake pasted the installed `SCR_CharacterDamageManagerComponent.c` source into the conversation, plus the controller's life-state method earlier. Previous runtime evidence identifies the build as 1.8.0.13; no new version output was supplied with the source. This is source inspection, not a runtime test.
 
 ## Confirmed in the supplied source
