@@ -1,91 +1,75 @@
-# First Workbench session
+# Workbench setup and current test workflow
 
-## Prerequisites
+For the latest checkpoint, start with [RESUME.md](RESUME.md). **Current source implements experimental explosions; it is not a harmless logging probe.** This revision still needs compilation/runtime testing.
 
-- Windows development PC with Arma Reforger installed.
-- Arma Reforger Tools installed through Steam's Tools library.
-- Tools and game on matching release branches. Record the actual versions used.
-- This Git repository available locally to Workbench.
+## Project and prerequisites
 
-No external C++ compiler, custom art package, or engine source license is needed for the planned script addon.
+Windows development PC with Arma Reforger and Arma Reforger Tools; game/tools on matching branches. Last visible build: 1.8.0.13. Record actual versions when testing.
 
-## 1. Create the addon project
-
-Follow Bohemia's [Mod Project Setup](https://community.bistudio.com/wiki/Arma_Reforger:Mod_Project_Setup) guide.
-
-Use `ExplosiveCasualties` as the project name and add the base Arma Reforger project as a dependency. Prefer having the addon root coincide with this repository root so `Scripts/Game/ExplosiveCasualties/` is inside the addon.
-
-**Do not overwrite this repository to satisfy a new-project dialog.** If Workbench requires an empty destination, create the project in a temporary directory outside the repository. Then bring its generated project files/resources into this root without replacing the existing README or Scripts directory. Reopen the project from its final location and verify paths/dependencies. If the dialog or generated layout differs from the guide, stop and share what it shows before guessing.
-
-Let Workbench generate the `.gproj` and resource metadata. We have deliberately not supplied a guessed descriptor, GUID, or dependency identifier.
-
-Confirm that this addon's `Scripts/Game` directory is included in the **Game** script module. See [Scripting Modding](https://community.bistudio.com/wiki/Arma_Reforger:Scripting_Modding). Do not alter the base game's source files to load the addon.
-
-## 2. Compile the logging-only probe
-
-The file is:
+Workbench created an addon subdirectory when Jake selected the workspace as the project location:
 
 ```text
-Scripts/Game/ExplosiveCasualties/EC_CharacterLifeStateProbe.c
+workspace/                       Repository/docs root
+  ExplosiveCasualties/            Addon root
+    addon.gproj
+    resourceDatabase.rdb
+    Scripts/Game/ExplosiveCasualties/
+      EC_CharacterLifeStateProbe.c
+      EC_CasualtyExplosion.c
 ```
 
-Its only change is a `modded class` override of `OnLifeStateChanged`, calling the original implementation and then logging the transition.
+Open existing `ExplosiveCasualties/addon.gproj`; do not create a replacement project or relocate/generated identifiers. Keep addon source/resources inside that root. Workbench has already discovered and compiled earlier scripts, and local diagnostic tests passed. Those results do not validate the new dispatcher.
 
-Compile/reload scripts using Workbench's script tooling. Menu names may vary with the installed version. This repository's probe has not been compiled yet, so compilation is a real checkpoint, not an expected formality.
+## Compile current gameplay source
 
-If it fails, capture the complete error text, filename, line number, and game/tools versions. Do not "fix" enum values or engine signatures by guessing.
+1. Stop Play.
+2. Reload externally changed files from disk; do not overwrite them with stale editor buffers. Both `.c` files are now maintained.
+3. Let Workbench generate needed source/resource metadata; do not invent GUIDs.
+4. In Script Editor, Shift+F7 compiles/reloads Game scripts. Capture exact compiler text, line numbers and versions if it fails; never guess enum/API fixes.
+5. Start a fresh Play session and use fresh characters. Do not reload between steps of a latch sequence.
 
-## 3. Make a small test world/scenario
+New logs use `[ExplosiveCasualties][trigger]` and `[ExplosiveCasualties][blast]`, not the old `[dry-run]` prefix.
 
-Use a minimal editable test scenario with ordinary vanilla soldiers and a way to injure them. No other gameplay mods should be loaded for the first test. Keep the actual test world/scenario resources in the addon if we create them; none are supplied yet.
+## Local runtime test
 
-Test separately:
+Open installed `ArmaReforger/Worlds/GameMaster/GM_Eden.ent` (Everon) in World Editor. Do not save changes to the base-game world. Use Play and place fresh soldiers via Game Master.
 
-1. A soldier who becomes unconscious rather than immediately dying.
-2. A healthy soldier who dies outright.
-3. An unconscious soldier who subsequently dies.
+Begin with one isolated casualty, then a few soldiers for a damage/chain test. Expected: one accepted trigger and one queued/spawned explosion per source. Real damage/effects must be observed; a spawn line is not proof of timer activation or client effects.
 
-Look for lines beginning:
+Selected asset:
 
-```text
-[ExplosiveCasualties][probe]
-```
+`{72BEEF40AF179763}Prefabs/Weapons/Warheads/Explosions/Explosion_Tnt_Large.et`
 
-The probe logs all life-state callbacks, not just casualties. Map its printed state values to the enum in the installed source. Confirm that the intended events actually reach this damage manager.
+It has timer, replication and damage effects. Current code lets its timer activate it; no extra OnUserTrigger/SetLive. Record timerLeft/alreadyTriggered. If silent, investigate timer start/duration; if already triggered at configuration, inspect attribution/ignore-list timing. Successful-spawn cleanup is not yet verified (Delete On Trigger appeared unchecked).
 
-**No explosions are expected at this stage.**
+Own source character is ignored by the damage container, not its root hierarchy. Test unconscious/recovery/death without another soldier's blast interfering. Vehicle/gear/impulse behavior and exact effective radius remain unverified. See [TESTING.md](TESTING.md).
 
-## 4. Inspect the source before implementing detonation
+## Resource Browser and prefab inspection reminders
 
-Use Workbench's source browser/search. We need:
+- A folder arrow expands subfolders; click its NAME to display files.
+- Script Editor searches source, not `.et` resources. Searches/navigation may open a different matching file; do not assume the active tab stays selected.
+- Resource Manager's prefab preview/Details panel is not World Editor's component inspector. Base-game resource edit buttons can be disabled.
+- To inspect components without editing the original prefab: open a disposable empty world in World Editor, drag the prefab into the viewport, select the placed instance in Hierarchy, and use Object Properties.
+- Do not click Apply to prefab or save changes to base-game files. Discard the temporary inspection world when done.
 
-- `SCR_CharacterDamageManagerComponent.OnLifeStateChanged`: implementation, caller/registration, callback timing, and meaning of `isJIP`.
-- `ECharacterLifeState`: actual unconsciousness and death constants in this build.
-- A vanilla authority check used in comparable damage/explosion code, including standalone and listen-server behavior.
-- `SCR_DamageManagerComponent.SecondaryExplosion`: implementation and at least one vanilla call site.
-- The selected mine/shell prefab and the actual explosion resource/configuration it uses.
-- Explosion networking: how damage is applied and how clients receive visual/audio effects.
-- The deferred-call mechanism and lifetime behavior if the character/component disappears.
-- The intended instigator/kill-credit policy and the API needed to preserve it.
+## Dedicated-server iteration
 
-The online API documents a callback and a secondary-explosion method, but does not establish that every explosion resource can be passed to that method unchanged.
+Jake has an empty dedicated server and one normal client. After a local compile/single-blast test, choose the license deliberately and distribute/publish an experimental build. Unlisted Workshop distribution is the proposed route; no upload is performed by the assistant.
 
-Record findings in the verification table in [DESIGN.md](DESIGN.md). The installed game is the authority for exact resource identifiers. Third-party source mirrors can be useful clues but may describe older versions.
+Test server acceptance, client proxy rejection/no extra spawns, AI and player casualties, effects/damage, small chains, respawn and JIP/reconnect together with explosions enabled. No second Steam account, separate diagnostic-only release or maintenance window is required. Correct unexpected client acceptance before claiming multiplayer support.
 
-## 5. Share enough information for the next iteration
+Keep private server configuration, credentials, account identifiers and unrelated repository files out of publication. Record addon revision, game versions, session role and exact results in `docs/test-runs/`.
 
-Provide:
+## Sources and remaining inspection
 
-- Game and Tools version/branch.
-- Generated project descriptor filename and whether the probe compiled.
-- Probe output for unconsciousness and direct death.
-- Relevant source excerpts from the callback and explosion call site.
-- Selected explosion resource path and identifier, copied from Workbench rather than typed from memory.
+- [Installed lifecycle source](source-notes/2026-10-01-character-lifecycle.md): callback subscription/handler and hit-zone authority check.
+- [Installed explosion source and asset evidence](source-notes/2026-10-01-secondary-explosion.md): spawning API, timer hypothesis and character-specific adaptation.
+- [Mod Project Setup](https://community.bistudio.com/wiki/Arma_Reforger:Mod_Project_Setup)
+- [Scripting Modding](https://community.bistudio.com/wiki/Arma_Reforger:Scripting_Modding)
+- [Mod Publishing Process](https://community.bistudio.com/wiki/Arma_Reforger:Mod_Publishing_Process)
 
-Do not share unrelated private server configuration or credentials.
+Engine initialization/isJIP semantics, authority migration, queue/reference lifetime, cleanup, score/friendly-fire and networking remain test/inspection work. Do not advertise untested support.
 
 ## Git housekeeping
 
-Review `git status` after generating/opening the project. Commit necessary project descriptors, source, resources, and engine metadata. Add narrow ignore rules only for observed disposable caches/build output. The current `.gitignore` intentionally does not exclude `.gproj` or `.meta`.
-
-Before publication, choose a project license and follow [Mod Publishing Process](https://community.bistudio.com/wiki/Arma_Reforger:Mod_Publishing_Process). Local development does not require publishing first.
+Review status/diffs after Workbench creates metadata. Commit required descriptors/source/metadata and narrowly ignore observed disposable output. Do not blanket-ignore `.gproj` or `.meta`. No commit has been performed by Element0; no project license has been selected.
